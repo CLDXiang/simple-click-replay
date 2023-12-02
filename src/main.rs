@@ -9,85 +9,131 @@ struct MouseClickEvent {
     button: MouseButton,
 }
 
+struct MouseRecorder {
+    mouse_click_events: Vec<MouseClickEvent>,
+    mouse_position: (i32, i32),
+    is_recording: bool,
+    last_start_recording_time: Instant,
+}
+
+impl MouseRecorder {
+    fn new() -> Self {
+        MouseRecorder {
+            mouse_click_events: Vec::new(),
+            mouse_position: (0, 0),
+            is_recording: false,
+            last_start_recording_time: Instant::now(),
+        }
+    }
+
+    fn start_recording(&mut self) {
+        println!("start recording");
+        self.mouse_click_events.clear();
+        self.last_start_recording_time = Instant::now();
+        self.is_recording = true;
+    }
+
+    fn stop_recording(&mut self) {
+        println!("stop recording");
+        self.is_recording = false;
+    }
+
+    fn toggle_recording(&mut self) {
+        if self.is_recording {
+            self.stop_recording();
+        } else {
+            self.start_recording();
+        }
+    }
+
+    fn get_mouse_click_events(&self) -> &Vec<MouseClickEvent> {
+        &self.mouse_click_events
+    }
+
+    fn record_mouse_click_event(&mut self, button: MouseButton) {
+        self.mouse_click_events.push(MouseClickEvent {
+            relative_time: self.last_start_recording_time.elapsed(),
+            position: self.mouse_position,
+            button,
+        });
+    }
+}
+
 fn main() {
     let device_state = Arc::new(DeviceState::new());
-    let mouse_position = Arc::new(Mutex::new((0, 0)));
-    let is_recoding: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
-    let last_start_recoding_time = Arc::new(Mutex::new(Instant::now()));
-    let mouse_click_events = Arc::new(Mutex::new(Vec::<MouseClickEvent>::new()));
+    let recorder = Arc::new(Mutex::new(MouseRecorder::new()));
 
-    let mouse_pos_for_closure = mouse_position.clone();
-    let _guard = device_state.on_mouse_move(move |position| {
-        let mut pos = mouse_pos_for_closure.lock().unwrap();
-        *pos = *position;
-        // println!("Position: {:#?}", position);
-    });
+    let _guard = {
+        let recorder: Arc<Mutex<MouseRecorder>> = recorder.clone();
+        device_state.on_mouse_move(move |position| {
+            handle_mouse_move(recorder.clone(), *position);
+        })
+    };
 
-    let is_recoding_for_closure = is_recoding.clone();
-    let last_start_recoding_time_for_closure = last_start_recoding_time.clone();
-    let mouse_pos_for_closure = mouse_position.clone();
-    let mouse_click_events_for_closure = mouse_click_events.clone();
-    let _guard = device_state.on_mouse_down(move |button| {
-        if !*is_recoding_for_closure.lock().unwrap() {
-            return;
-        }
-        let mut mouse_click_events = mouse_click_events_for_closure.lock().unwrap();
-        let last_start_recoding_time = last_start_recoding_time_for_closure.lock().unwrap();
-        let pos = mouse_pos_for_closure.lock().unwrap();
-        mouse_click_events.push(MouseClickEvent {
-            relative_time: last_start_recoding_time.elapsed(),
-            position: *pos,
-            button: *button,
-        });
-    });
+    let _guard = {
+        let recorder: Arc<Mutex<MouseRecorder>> = recorder.clone();
 
-    let device_state_for_keyboard: Arc<DeviceState> = device_state.clone();
-    let is_recoding_for_closure = is_recoding.clone();
-    let last_start_recoding_time_for_closure = last_start_recoding_time.clone();
-    let mouse_click_events_for_closure = mouse_click_events.clone();
-    let _guard = device_state.on_key_down(move |key| {
-        // println!("Keyboard key down: {:#?}", key);
-        // when key is c or v
-        if !(*key == Keycode::C || *key == Keycode::V) {
-            return;
-        }
-        let keys = device_state_for_keyboard.get_keys();
-        if keys.contains(&Keycode::LControl)
-            && keys.contains(&Keycode::LShift)
-            && keys.contains(&Keycode::LAlt)
-        {
-            let mut is_recoding = is_recoding_for_closure.lock().unwrap();
-            if *key == Keycode::C {
-                *is_recoding = !*is_recoding;
-                println!("recording: {}", *is_recoding);
-                if *is_recoding {
-                    let mut last_start_recoding_time =
-                        last_start_recoding_time_for_closure.lock().unwrap();
-                    *last_start_recoding_time = Instant::now();
-                    let mut mouse_click_events = mouse_click_events_for_closure.lock().unwrap();
-                    mouse_click_events.clear();
-                }
-            } else if *key == Keycode::V {
-                if *is_recoding {
-                    println!("recording is not finished");
-                    return;
-                }
-                // print click events
-                let mouse_click_events = mouse_click_events_for_closure.lock().unwrap();
-                for mouse_click_event in mouse_click_events.iter() {
-                    println!(
-                        "relative_time: {:#?}, position: ({},{}), button: {:#?}",
-                        mouse_click_event.relative_time,
-                        mouse_click_event.position.0,
-                        mouse_click_event.position.1,
-                        mouse_click_event.button
-                    );
-                }
-            }
-        }
-    });
+        device_state.on_mouse_down(move |button| {
+            handle_mouse_down(recorder.clone(), *button);
+        })
+    };
+
+    let _guard = {
+        let recorder: Arc<Mutex<MouseRecorder>> = recorder.clone();
+        let device_state_for_closure = device_state.clone();
+        device_state.on_key_down(move |key| {
+            handle_key_down(device_state_for_closure.clone(), recorder.clone(), *key);
+        })
+    };
 
     loop {
         thread::sleep(Duration::from_secs(1000));
+    }
+}
+
+fn handle_mouse_move(recorder: Arc<Mutex<MouseRecorder>>, position: (i32, i32)) {
+    let mut recorder = recorder.lock().unwrap();
+    recorder.mouse_position = position;
+}
+
+fn handle_mouse_down(recorder: Arc<Mutex<MouseRecorder>>, button: MouseButton) {
+    let mut recorder = recorder.lock().unwrap();
+    if !recorder.is_recording {
+        return;
+    }
+    recorder.record_mouse_click_event(button);
+}
+
+fn handle_key_down(
+    device_state: Arc<DeviceState>,
+    recorder: Arc<Mutex<MouseRecorder>>,
+    key: Keycode,
+) {
+    if key != Keycode::C && key != Keycode::V {
+        return;
+    }
+    let keys = device_state.get_keys();
+    if keys.contains(&Keycode::LControl)
+        && keys.contains(&Keycode::LShift)
+        && keys.contains(&Keycode::LAlt)
+    {
+        let mut recorder = recorder.lock().unwrap();
+        if key == Keycode::C {
+            recorder.toggle_recording();
+        } else if key == Keycode::V {
+            if recorder.is_recording {
+                println!("recording is not finished");
+                return;
+            }
+            for mouse_click_event in recorder.get_mouse_click_events().iter() {
+                println!(
+                    "relative_time: {:#?}, position: ({},{}), button: {:#?}",
+                    mouse_click_event.relative_time,
+                    mouse_click_event.position.0,
+                    mouse_click_event.position.1,
+                    mouse_click_event.button
+                );
+            }
+        }
     }
 }
