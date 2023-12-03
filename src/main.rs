@@ -142,11 +142,11 @@ fn handle_key_down(
             let click_events = recorder.get_mouse_click_events();
             // use enigo to replay mouse click events
             let mut enigo = Enigo::new();
-            let mut last_pos = (0, 0);
+            let mut last_pos = (-1, -1);
             for click_event in click_events {
                 thread::sleep(click_event.relative_time);
                 let cur_pos: (i32, i32) = device_state.get_mouse().coords;
-                if cur_pos != last_pos && last_pos != (0, 0) {
+                if cur_pos != last_pos && last_pos != (-1, -1) {
                     println!("mouse moved, stop replaying");
                     return;
                 }
