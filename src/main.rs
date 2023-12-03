@@ -1,9 +1,10 @@
 use device_query::{DeviceEvents, DeviceQuery, DeviceState, Keycode};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use enigo::*;
 
+#[derive(Clone)]
 struct MouseClickEvent {
     relative_time: Duration,
     position: (i32, i32),
@@ -15,6 +16,7 @@ struct MouseRecorder {
     mouse_position: (i32, i32),
     is_recording: bool,
     last_event_time: Instant,
+    should_interrupt_replay: bool,
 }
 
 impl MouseRecorder {
@@ -24,6 +26,7 @@ impl MouseRecorder {
             mouse_position: (0, 0),
             is_recording: false,
             last_event_time: Instant::now(),
+            should_interrupt_replay: false,
         }
     }
 
@@ -47,8 +50,8 @@ impl MouseRecorder {
         }
     }
 
-    fn get_mouse_click_events(&self) -> &Vec<MouseClickEvent> {
-        &self.mouse_click_events
+    fn get_mouse_click_events(&mut self) -> Vec<MouseClickEvent> {
+        self.mouse_click_events.clone()
     }
 
     fn record_mouse_click_event(&mut self, button: MouseButton) {
@@ -65,43 +68,110 @@ impl MouseRecorder {
     }
 }
 
+#[derive(Debug)]
+enum DeviceEvent {
+    MouseMove((i32, i32)),
+    MouseDown(usize),
+    KeyDown(Keycode),
+}
+
+struct ReplayEvent {
+    events: Vec<MouseClickEvent>,
+}
+
 fn main() {
     let device_state = Arc::new(DeviceState::new());
     let recorder = Arc::new(Mutex::new(MouseRecorder::new()));
+    let (tx, rx) = mpsc::channel::<DeviceEvent>();
+    let (replay_tx, replay_rx) = mpsc::channel::<ReplayEvent>();
 
-    let _guard = {
-        let recorder: Arc<Mutex<MouseRecorder>> = recorder.clone();
-        device_state.on_mouse_move(move |position| {
-            handle_mouse_move(recorder.clone(), *position);
-        })
-    };
+    let last_pos =  Arc::new(Mutex::new((-1, -1)));
+    let device_state_for_listener_thread = device_state.clone();
 
-    let _guard = {
-        let recorder: Arc<Mutex<MouseRecorder>> = recorder.clone();
+    let _listener_thread = thread::spawn(move || {
+        let device_state = device_state_for_listener_thread.clone();
+        let tx = tx.clone();
+        let _guard = {
+            let tx = tx.clone();
+            device_state.on_mouse_move(move |position| {
+                tx.send(DeviceEvent::MouseMove(*position)).unwrap();
+            })
+        };
 
-        device_state.on_mouse_down(move |button| {
-            if *button != 1 && *button != 2 && *button != 3 {
-                return;
+        let _guard = {
+            let tx = tx.clone();
+            device_state.on_mouse_down(move |button| {
+                tx.send(DeviceEvent::MouseDown(*button)).unwrap();
+            })
+        };
+
+        let _guard = {
+            let tx = tx.clone();
+            device_state.on_key_down(move |key| {
+                tx.send(DeviceEvent::KeyDown(*key)).unwrap();
+            })
+        };
+
+        loop {
+            thread::sleep(Duration::from_secs(1000));
+        }
+    });
+
+
+    let recorder_for_replay_thread = recorder.clone();
+    let last_pos_for_replay_thread = last_pos.clone();
+    let _replay_thread = thread::spawn(move || {
+        let mut enigo: Enigo = Enigo::new();
+        loop {
+            let replay_event = replay_rx.recv().unwrap();
+            {
+                let mut recorder = recorder_for_replay_thread.lock().unwrap();
+                recorder.should_interrupt_replay = false;
             }
-            handle_mouse_down(recorder.clone(), match *button {
-                1 => MouseButton::Left,
-                2 => MouseButton::Right,
-                3 => MouseButton::Middle,
-                _ => panic!("impossible"),
-            });
-        })
-    };
-
-    let _guard = {
-        let recorder: Arc<Mutex<MouseRecorder>> = recorder.clone();
-        let device_state_for_closure = device_state.clone();
-        device_state.on_key_down(move |key| {
-            handle_key_down(device_state_for_closure.clone(), recorder.clone(), *key);
-        })
-    };
+            for click_event in replay_event.events {
+                thread::sleep(click_event.relative_time);
+                {
+                    let recorder = recorder_for_replay_thread.lock().unwrap();
+                    if recorder.should_interrupt_replay {
+                        println!("replay interrupted");
+                        break;
+                    }
+                }
+                last_pos_for_replay_thread.lock().unwrap().0 = click_event.position.0;
+                last_pos_for_replay_thread.lock().unwrap().1 = click_event.position.1;
+                enigo.mouse_move_to(click_event.position.0, click_event.position.1);
+                enigo.mouse_down(click_event.button);
+                enigo.mouse_up(click_event.button);
+            }
+        }
+    });
 
     loop {
-        thread::sleep(Duration::from_secs(1000));
+        let event = rx.recv().unwrap();
+
+        if let DeviceEvent::MouseMove(position) = event {
+            if position != last_pos.lock().unwrap().clone() {
+                recorder.lock().unwrap().should_interrupt_replay = true;
+            }
+        } else {
+            recorder.lock().unwrap().should_interrupt_replay = true;
+        }
+        match event {
+            DeviceEvent::MouseMove(position) => {
+                handle_mouse_move(recorder.clone(), position);
+            }
+            DeviceEvent::MouseDown(button) => {
+                handle_mouse_down(recorder.clone(), match button {
+                    1 => MouseButton::Left,
+                    2 => MouseButton::Right,
+                    3 => MouseButton::Middle,
+                    _ => panic!("impossible"),
+                });
+            }
+            DeviceEvent::KeyDown(key) => {
+                handle_key_down(device_state.clone(), recorder.clone(), key, replay_tx.clone());
+            }
+        }
     }
 }
 
@@ -122,6 +192,7 @@ fn handle_key_down(
     device_state: Arc<DeviceState>,
     recorder: Arc<Mutex<MouseRecorder>>,
     key: Keycode,
+    tx: mpsc::Sender<ReplayEvent>,
 ) {
     if key != Keycode::C && key != Keycode::X {
         return;
@@ -139,22 +210,9 @@ fn handle_key_down(
                 println!("recording is not finished");
                 return;
             }
-            let click_events = recorder.get_mouse_click_events();
-            // use enigo to replay mouse click events
-            let mut enigo = Enigo::new();
-            let mut last_pos = (-1, -1);
-            for click_event in click_events {
-                thread::sleep(click_event.relative_time);
-                let cur_pos: (i32, i32) = device_state.get_mouse().coords;
-                if cur_pos != last_pos && last_pos != (-1, -1) {
-                    println!("mouse moved, stop replaying");
-                    return;
-                }
-                enigo.mouse_move_to(click_event.position.0, click_event.position.1);
-                last_pos = click_event.position;
-                enigo.mouse_down(click_event.button);
-                enigo.mouse_up(click_event.button);
-            }
+            tx.send(ReplayEvent {
+                events: recorder.get_mouse_click_events(),
+            }).unwrap();
         }
     }
 }
