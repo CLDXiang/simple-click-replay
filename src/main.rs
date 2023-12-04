@@ -31,14 +31,14 @@ impl MouseRecorder {
     }
 
     fn start_recording(&mut self) {
-        println!("start recording");
+        println!("Recording. Press ctrl + shift + alt + c again to finish recording");
         self.mouse_click_events.clear();
         self.last_event_time = Instant::now();
         self.is_recording = true;
     }
 
     fn stop_recording(&mut self) {
-        println!("stop recording");
+        println!("Recording finished. Press ctrl + shift + alt + x to replay");
         self.is_recording = false;
     }
 
@@ -99,6 +99,8 @@ impl LastEnigoEvent {
 }
 
 fn main() {
+    println!("Press ctrl + shift + alt + c to start recording");
+
     let device_state = Arc::new(DeviceState::new());
     let recorder = Arc::new(Mutex::new(MouseRecorder::new()));
     let (tx, rx) = mpsc::channel::<DeviceEvent>();
@@ -143,6 +145,7 @@ fn main() {
         let mut enigo: Enigo = Enigo::new();
         loop {
             let replay_event = replay_rx.recv().unwrap();
+            println!("Replaying");
             {
                 let mut recorder = recorder_for_replay_thread.lock().unwrap();
                 recorder.should_interrupt_replay = false;
@@ -152,7 +155,7 @@ fn main() {
                 {
                     let recorder = recorder_for_replay_thread.lock().unwrap();
                     if recorder.should_interrupt_replay {
-                        println!("replay interrupted");
+                        println!("Replay interrupted");
                         break;
                     }
                 }
@@ -234,7 +237,7 @@ fn handle_key_down(
             recorder.toggle_recording();
         } else if key == Keycode::X {
             if recorder.is_recording {
-                println!("recording is not finished");
+                println!("Cannot replay while recording, press ctrl + shift + alt + c to stop recording");
                 return;
             }
             tx.send(ReplayEvent {
