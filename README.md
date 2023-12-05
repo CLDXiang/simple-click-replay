@@ -10,7 +10,7 @@ Windows only. This is a simple click replay tool. It can be used to automate sim
 2. `Ctrl + Shift + Alt + C` 开始录制
 3. 点点点
 4. `Ctrl + Shift + Alt + C` 停止录制
-5. `Ctrl + Shift + Alt + X` 开始重放
+5. `Ctrl + Shift + Alt + X` 开始重放 / `Ctrl + Shift + Alt + X` 无限循环
 
 ## Usage
 
@@ -18,4 +18,4 @@ Windows only. This is a simple click replay tool. It can be used to automate sim
 2. `Ctrl + Shift + Alt + C` to start recording
 3. Click on the screen
 4. `Ctrl + Shift + Alt + C` to stop recording
-5. `Ctrl + Shift + Alt + X` to start replaying
+5. `Ctrl + Shift + Alt + X` to start replaying / `Ctrl + Shift + Alt + X` to loop

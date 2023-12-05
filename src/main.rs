@@ -77,6 +77,7 @@ enum DeviceEvent {
 
 struct ReplayEvent {
     events: Vec<MouseClickEvent>,
+    auto_loop: bool,
 }
 
 struct LastEnigoEvent {
@@ -150,21 +151,43 @@ fn main() {
                 let mut recorder = recorder_for_replay_thread.lock().unwrap();
                 recorder.should_interrupt_replay = false;
             }
-            for click_event in replay_event.events {
-                thread::sleep(click_event.relative_time);
-                {
-                    let recorder = recorder_for_replay_thread.lock().unwrap();
-                    if recorder.should_interrupt_replay {
-                        println!("Replay interrupted");
-                        break;
+            if replay_event.auto_loop {
+                'outer: loop {
+                    for click_event in replay_event.events.clone() {
+                        thread::sleep(click_event.relative_time);
+                        {
+                            let recorder = recorder_for_replay_thread.lock().unwrap();
+                            if recorder.should_interrupt_replay {
+                                println!("Replay interrupted");
+                                break 'outer;
+                            }
+                        }
+                        last_enigo_event_for_replay_thread.lock().unwrap().update(click_event.position);
+                        enigo.mouse_move_to(click_event.position.0, click_event.position.1);
+                        thread::sleep(Duration::from_millis(10));
+                        enigo.mouse_down(click_event.button);
+                        thread::sleep(Duration::from_millis(10));
+                        enigo.mouse_up(click_event.button);
                     }
+                    thread::sleep(Duration::from_millis(100));
                 }
-                last_enigo_event_for_replay_thread.lock().unwrap().update(click_event.position);
-                enigo.mouse_move_to(click_event.position.0, click_event.position.1);
-                thread::sleep(Duration::from_millis(10));
-                enigo.mouse_down(click_event.button);
-                thread::sleep(Duration::from_millis(10));
-                enigo.mouse_up(click_event.button);
+            } else {
+                for click_event in replay_event.events {
+                    thread::sleep(click_event.relative_time);
+                    {
+                        let recorder = recorder_for_replay_thread.lock().unwrap();
+                        if recorder.should_interrupt_replay {
+                            println!("Replay interrupted");
+                            break;
+                        }
+                    }
+                    last_enigo_event_for_replay_thread.lock().unwrap().update(click_event.position);
+                    enigo.mouse_move_to(click_event.position.0, click_event.position.1);
+                    thread::sleep(Duration::from_millis(10));
+                    enigo.mouse_down(click_event.button);
+                    thread::sleep(Duration::from_millis(10));
+                    enigo.mouse_up(click_event.button);
+                }
             }
         }
     });
@@ -224,7 +247,7 @@ fn handle_key_down(
     key: Keycode,
     tx: mpsc::Sender<ReplayEvent>,
 ) {
-    if key != Keycode::C && key != Keycode::X {
+    if key != Keycode::C && key != Keycode::X && key != Keycode::V {
         return;
     }
     let keys = device_state.get_keys();
@@ -235,13 +258,14 @@ fn handle_key_down(
         let mut recorder = recorder.lock().unwrap();
         if key == Keycode::C {
             recorder.toggle_recording();
-        } else if key == Keycode::X {
+        } else if key == Keycode::X || key == Keycode::V {
             if recorder.is_recording {
                 println!("Cannot replay while recording, press ctrl + shift + alt + c to stop recording");
                 return;
             }
             tx.send(ReplayEvent {
                 events: recorder.get_mouse_click_events(),
+                auto_loop: key == Keycode::V,
             }).unwrap();
         }
     }
